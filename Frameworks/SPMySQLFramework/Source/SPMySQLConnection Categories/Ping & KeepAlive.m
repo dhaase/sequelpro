@@ -33,6 +33,7 @@
 #import "SPMySQL Private APIs.h"
 #import "Locking.h"
 #import <pthread.h>
+#include <stdio.h>
 
 @implementation SPMySQLConnection (Ping_and_KeepAlive)
 
@@ -80,12 +81,14 @@
  */
 - (void)_threadedKeepAlive
 {
-	if(keepAliveThread) {
-		NSLog(@"warning: overwriting existing keepAliveThread: %@, results may be unpredictable!",keepAliveThread);
+	@synchronized(self) {
+		if(keepAliveThread) {
+			NSLog(@"warning: overwriting existing keepAliveThread: %@, results may be unpredictable!",keepAliveThread);
+		}
 	}
 	
 	keepAliveThread = [NSThread currentThread];
-	[keepAliveThread setName:@"SPMySQL connection keepalive monitor thread"];
+	[keepAliveThread setName:[NSString stringWithFormat:@"SPMySQL connection keepalive monitor thread (id=%p)", self]];
 
 	// If the maximum number of ping failures has been reached, determine whether to reconnect.
 	if (keepAliveLastPingBlocked || keepAlivePingFailures >= 3) {
@@ -113,7 +116,9 @@
 		keepAlivePingFailures++;
 	}
 end_cleanup:
-	keepAliveThread = nil;
+	@synchronized(self) {
+		keepAliveThread = nil;
+	}
 }
 
 #pragma mark -
@@ -158,6 +163,7 @@ end_cleanup:
 	pingDetails->mySQLConnection = mySQLConnection;
 	pingDetails->keepAliveLastPingSuccessPointer = &keepAliveLastPingSuccess;
 	pingDetails->keepAlivePingThreadActivePointer = &keepAlivePingThreadActive;
+	pingDetails->parentId = self;
 
 	// Create a pthread for the ping
 	pthread_t keepAlivePingThread_t;
@@ -216,9 +222,11 @@ end_cleanup:
  */
 void _backgroundPingTask(void *ptr)
 {
-	pthread_setname_np("SPMySQL _backgroundPingTask() worker thread");
-	
 	SPMySQLConnectionPingDetails *pingDetails = (SPMySQLConnectionPingDetails *)ptr;
+	
+	char threadNameBuf[80];
+	snprintf(threadNameBuf, sizeof(threadNameBuf), "SPMySQL _backgroundPingTask() worker thread (id=%p)", pingDetails->parentId);
+	pthread_setname_np(threadNameBuf);
 
 	// Set up a cleanup routine
 	pthread_cleanup_push(_pingThreadCleanup, pingDetails);
